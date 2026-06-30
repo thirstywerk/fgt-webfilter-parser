@@ -1,23 +1,36 @@
 # fgt-webfilter-parser
-Generates a VDOM-specific report of webfilter profiles referenced in firewall policies (Name &amp; ID); unreferenced profiles are skipped. Requires a super-admin read-only API key. The script explicitly bypasses local proxies.
+Generates a VDOM-specific report of **WebFilter**, **DNS Filter** and **Application Control** profiles referenced in firewall policies (Name &amp; ID); unreferenced profiles are skipped. It can also flag FortiGuard categories where a policy's web filter and DNS filter profiles assign different actions (a "clash"). Requires a super-admin read-only API key. The script explicitly bypasses local proxies.
+
+By default (no section flag) all four reports are produced. Pass one or more of `--webfilter`, `--dnsfilter`, `--appcontrol`, `--check-clash` to limit output to those sections. `--check-clash` always fetches both web and DNS filter data regardless of the other flags.
+
+The read-only API key must have read access to the `webfilter`, `dnsfilter`, `application` and `firewall/policy` endpoints.
+
+> Note: Application Control *category* IDs cannot be resolved to names via the API, so they are mapped from the hardcoded `APP_CATEGORIES` table in `generate-report.py`. Update it if your FortiOS version adds categories.
 
 Usage:
 ```
-usage: generate-report.py [-h] fqdn vdom api_key
+usage: generate-report.py [-h] [--webfilter] [--dnsfilter] [--appcontrol]
+                          [--check-clash]
+                          fqdn vdom api_key
 
 Connect to FortiGate API
 
 positional arguments:
-  fqdn        Fully Qualified Domain Name with optional port (FQDN[:PORT])
-  vdom        Virtual Domain name
-  api_key     API key for authentication
+  fqdn           Fully Qualified Domain Name with optional port (FQDN[:PORT])
+  vdom           Virtual Domain name
+  api_key        API key for authentication
 
 options:
-  -h, --help  show this help message and exit
+  -h, --help     show this help message and exit
+  --webfilter    Include the WebFilter profile report
+  --dnsfilter    Include the DNS Filter profile report
+  --appcontrol   Include the Application Control report
+  --check-clash  Include the Web/DNS filter clash report
 
 Examples:
   python generate-report.py dc-abc-fw01.xy.com:8443 FG-traffic YOUR_API_KEY
   python generate-report.py dc-abc-fw02.xy.com FG-traffic YOUR_API_KEY
+  python generate-report.py dc-abc-fw02.xy.com FG-traffic YOUR_API_KEY --dnsfilter --check-clash
 ```
 
 Example Output:
@@ -231,4 +244,64 @@ Profile: webflt_guest
     - custom2
   Warning Categories: None
   Authenticate Categories: None
+```
+
+Example DNS Filter Output:
+```
+================================================================================
+FORTIGATE DNS FILTER PROFILE REPORT
+================================================================================
+
+Profile: dnsflt_general
+  Used in Policies: "staff_internet" (id: 1), "voice_internet" (id: 4)
+--------------------------------------------------------------------------------
+  Blocked Categories:
+    - Malicious Websites
+    - Newly Registered Domain
+    - Phishing
+  Monitored Categories:
+    - Social Networking
+    - Streaming Media and Download
+  Settings:
+    - Domain Filter Table: corp_blocklist
+    - Block Botnet: enable
+    - Safe Search: disable
+    - External IP Blocklist: None
+================================================================================
+```
+
+Example Application Control Output:
+```
+================================================================================
+FORTIGATE APPLICATION CONTROL REPORT
+================================================================================
+
+Profile: app_default
+  Used in Policies: "staff_internet" (id: 1)
+--------------------------------------------------------------------------------
+  Pass - Categories:
+    - Social.Media
+  Block - Categories:
+    - P2P
+    - Proxy
+  Block - Applications:
+    - BitTorrent
+    - Ultrasurf
+================================================================================
+```
+
+Example Web/DNS Clash Output:
+
+The clash report inspects each policy that references both a web filter and a DNS filter profile, and lists any FortiGuard category the two profiles treat differently (any action difference). This helps catch cases where, for example, a category is blocked at the web layer but only monitored at the DNS layer.
+```
+================================================================================
+WEB/DNS FILTER CLASH REPORT
+================================================================================
+
+Policy: "staff_internet" (id: 1)
+  Web Filter Profile: webflt_general
+  DNS Filter Profile: dnsflt_general
+  Clashing Categories (1):
+    - Streaming Media and Download — webfilter: block, dnsfilter: monitor
+================================================================================
 ```
