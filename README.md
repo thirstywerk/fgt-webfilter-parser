@@ -5,7 +5,7 @@ By default (no section flag) all four reports are produced. Pass one or more of 
 
 The read-only API key must have read access to the `webfilter`, `dnsfilter`, `application` and `firewall/policy` endpoints.
 
-> Note: Application Control *category* IDs cannot be resolved to names via the API, so they are mapped from the hardcoded `APP_CATEGORIES` table in `generate-report.py`. Update it if your FortiOS version adds categories.
+> Note: Application Control *category* IDs cannot be resolved to names via the API, so they are mapped from the hardcoded `APP_CATEGORIES` table in `generate-report.py`. Any unmapped ID is shown as `Category-<id>`. Run with `--list-app-categories` to print every category ID present on the device alongside example application names — use this to identify and add missing names to `APP_CATEGORIES` for your FortiOS version.
 
 Usage:
 ```
@@ -26,6 +26,8 @@ options:
   --dnsfilter    Include the DNS Filter profile report
   --appcontrol   Include the Application Control report
   --check-clash  Include the Web/DNS filter clash report
+  --list-app-categories
+                 List application category IDs with example app names and exit
 
 Examples:
   python generate-report.py dc-abc-fw01.xy.com:8443 FG-traffic YOUR_API_KEY

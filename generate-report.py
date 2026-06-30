@@ -48,6 +48,7 @@ APP_CATEGORIES = {
     31: "Mobile",
     32: "Industrial",
     33: "Unknown.Applications",
+    36: "GenAI",
 }
 
 class FortiGateAPI:
@@ -507,6 +508,32 @@ def generate_clash_report(clashes: List[Dict]) -> str:
     return "\n".join(lines)
 
 
+def list_app_categories(fg: 'FortiGateAPI', examples: int = 6):
+    """Print every application category ID present on the device with a few
+    example application names, so APP_CATEGORIES can be verified/extended."""
+    print("Fetching application signatures...")
+    applications = fg.get_applications()
+    print(f"Retrieved {len(applications)} application signatures.\n")
+
+    by_category: Dict[int, List[str]] = {}
+    for sig in applications:
+        cat_id = sig.get('category')
+        if not isinstance(cat_id, int):
+            continue
+        by_category.setdefault(cat_id, [])
+        if 'name' in sig:
+            by_category[cat_id].append(sig['name'])
+
+    print("=" * 80)
+    print("APPLICATION CATEGORY IDS")
+    print("=" * 80)
+    for cat_id in sorted(by_category):
+        name = APP_CATEGORIES.get(cat_id, "<unmapped>")
+        samples = ", ".join(by_category[cat_id][:examples])
+        print(f"  id {cat_id:>3}  {name:<22} ({len(by_category[cat_id])} apps)  e.g. {samples}")
+    print("=" * 80)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Connect to FortiGate API',
@@ -525,6 +552,9 @@ def main():
                         help='Include the Application Control report')
     parser.add_argument('--check-clash', action='store_true',
                         help='Include the Web/DNS filter clash report')
+    parser.add_argument('--list-app-categories', action='store_true',
+                        help='List application category IDs with example app names and exit '
+                             '(helps map/verify the APP_CATEGORIES table) ')
 
     args = parser.parse_args()
 
@@ -542,6 +572,10 @@ def main():
 
     print(f"Connecting to {fqdn} (VDOM: {vdom})...")
     fg = FortiGateAPI(fqdn, api_key, vdom)
+
+    if args.list_app_categories:
+        list_app_categories(fg)
+        return
 
     print("Fetching firewall policies...")
     policies = fg.get_firewall_policies()
