@@ -366,6 +366,43 @@ def _policy_refs_line(policy_info: List[Dict[str, any]]) -> str:
     return ", ".join(refs)
 
 
+def _comment_line(lines: List[str], profile: Dict):
+    """Append a 'Comment:' line if the profile has a non-empty comment field."""
+    comment = (profile.get('comment') or '').strip()
+    if comment:
+        lines.append(f"  Comment: {comment}")
+
+
+def _split_used_unused(items: List[Dict], profile_policies: Dict[str, List],
+                       include_unused: bool, name_key: str = 'name') -> Tuple[List[Dict], List[Dict]]:
+    """Split profiles into (used, unused) by whether their name is referenced by a
+    policy. Unused is empty unless include_unused is set."""
+    used = [i for i in items if i.get(name_key) in profile_policies]
+    unused = ([i for i in items if i.get(name_key) not in profile_policies]
+              if include_unused else [])
+    return used, unused
+
+
+def _profile_header(lines: List[str], name: str, profile: Dict,
+                    profile_policies: Dict[str, List], used: bool):
+    """Append the common per-profile header (Profile / Used in Policies / Comment)."""
+    lines.append(f"Profile: {name}")
+    if used:
+        lines.append(f"  Used in Policies: {_policy_refs_line(profile_policies.get(name, []))}")
+    else:
+        lines.append("  Used in Policies: NONE (configured but not referenced by any policy)")
+    _comment_line(lines, profile)
+    lines.append("-" * 80)
+
+
+def _unused_banner(lines: List[str]):
+    """Append a prominent banner marking the start of the unused-profiles section."""
+    lines.append("#" * 80)
+    lines.append("#  CONFIGURED BUT UNUSED PROFILES")
+    lines.append("#" * 80)
+    lines.append("")
+
+
 def _category_block(lines: List[str], label: str, items: List[str], show_none: bool = True):
     """Append a sorted bulleted category list (or 'label: None') to lines."""
     if items:
@@ -377,23 +414,20 @@ def _category_block(lines: List[str], label: str, items: List[str], show_none: b
 
 
 def generate_report(profiles: List[Dict], categories: Dict[int, str],
-                   profile_policies: Dict[str, List[Dict[str, any]]]) -> str:
+                   profile_policies: Dict[str, List[Dict[str, any]]],
+                   include_unused: bool = False) -> str:
     """Generate formatted webfilter text report"""
     lines = _section_header("FORTIGATE WEBFILTER PROFILE REPORT")
 
-    # Filter profiles to only include those used in policies
-    used_profiles = [p for p in profiles if p.get('name') in profile_policies]
+    used_profiles, unused_profiles = _split_used_unused(profiles, profile_policies, include_unused)
 
-    if not used_profiles:
+    if not used_profiles and not unused_profiles:
         lines.append("No webfilter profiles are currently used in firewall policies.")
         return "\n".join(lines)
 
-    for profile in used_profiles:
+    def render(profile: Dict, used: bool):
         profile_name = profile.get('name', 'Unnamed Profile')
-
-        lines.append(f"Profile: {profile_name}")
-        lines.append(f"  Used in Policies: {_policy_refs_line(profile_policies.get(profile_name, []))}")
-        lines.append("-" * 80)
+        _profile_header(lines, profile_name, profile, profile_policies, used)
 
         categorised = categorise_profile(profile, categories)
 
@@ -405,28 +439,34 @@ def generate_report(profiles: List[Dict], categories: Dict[int, str],
 
         lines.append("")
 
+    for profile in used_profiles:
+        render(profile, used=True)
+
+    if unused_profiles:
+        _unused_banner(lines)
+        for profile in unused_profiles:
+            render(profile, used=False)
+
     lines.append("=" * 80)
     return "\n".join(lines)
 
 
 def generate_dns_report(profiles: List[Dict], categories: Dict[int, str],
                         profile_policies: Dict[str, List[Dict[str, any]]],
-                        domain_filter_names: Dict[int, str]) -> str:
+                        domain_filter_names: Dict[int, str],
+                        include_unused: bool = False) -> str:
     """Generate formatted DNS filter text report"""
     lines = _section_header("FORTIGATE DNS FILTER PROFILE REPORT")
 
-    used_profiles = [p for p in profiles if p.get('name') in profile_policies]
+    used_profiles, unused_profiles = _split_used_unused(profiles, profile_policies, include_unused)
 
-    if not used_profiles:
+    if not used_profiles and not unused_profiles:
         lines.append("No DNS filter profiles are currently used in firewall policies.")
         return "\n".join(lines)
 
-    for profile in used_profiles:
+    def render(profile: Dict, used: bool):
         profile_name = profile.get('name', 'Unnamed Profile')
-
-        lines.append(f"Profile: {profile_name}")
-        lines.append(f"  Used in Policies: {_policy_refs_line(profile_policies.get(profile_name, []))}")
-        lines.append("-" * 80)
+        _profile_header(lines, profile_name, profile, profile_policies, used)
 
         categorised, settings = categorise_dns_profile(profile, categories, domain_filter_names)
 
@@ -442,6 +482,14 @@ def generate_dns_report(profiles: List[Dict], categories: Dict[int, str],
 
         lines.append("")
 
+    for profile in used_profiles:
+        render(profile, used=True)
+
+    if unused_profiles:
+        _unused_banner(lines)
+        for profile in unused_profiles:
+            render(profile, used=False)
+
     lines.append("=" * 80)
     return "\n".join(lines)
 
@@ -449,24 +497,22 @@ def generate_dns_report(profiles: List[Dict], categories: Dict[int, str],
 def generate_app_report(app_lists: List[Dict],
                         profile_policies: Dict[str, List[Dict[str, any]]],
                         app_names: Dict[int, str],
-                        category_names: Dict[int, str]) -> str:
+                        category_names: Dict[int, str],
+                        include_unused: bool = False) -> str:
     """Generate formatted application control text report"""
     lines = _section_header("FORTIGATE APPLICATION CONTROL REPORT")
 
-    used_lists = [a for a in app_lists if a.get('name') in profile_policies]
+    used_lists, unused_lists = _split_used_unused(app_lists, profile_policies, include_unused)
 
-    if not used_lists:
+    if not used_lists and not unused_lists:
         lines.append("No application control profiles are currently used in firewall policies.")
         return "\n".join(lines)
 
     action_order = ['monitor', 'allow', 'block', 'reset']
 
-    for app_list in used_lists:
+    def render(app_list: Dict, used: bool):
         list_name = app_list.get('name', 'Unnamed Profile')
-
-        lines.append(f"Profile: {list_name}")
-        lines.append(f"  Used in Policies: {_policy_refs_line(profile_policies.get(list_name, []))}")
-        lines.append("-" * 80)
+        _profile_header(lines, list_name, app_list, profile_policies, used)
 
         categorised = categorise_app_list(app_list, app_names, category_names)
         keys = action_order + [k for k in categorised if k not in action_order]
@@ -480,6 +526,14 @@ def generate_app_report(app_lists: List[Dict],
             _category_block(lines, f"{label} - Applications", data['applications'], show_none=False)
 
         lines.append("")
+
+    for app_list in used_lists:
+        render(app_list, used=True)
+
+    if unused_lists:
+        _unused_banner(lines)
+        for app_list in unused_lists:
+            render(app_list, used=False)
 
     lines.append("=" * 80)
     return "\n".join(lines)
@@ -552,6 +606,10 @@ def main():
                         help='Include the Application Control report')
     parser.add_argument('--check-clash', action='store_true',
                         help='Include the Web/DNS filter clash report')
+    parser.add_argument('--include-unused', action='store_true',
+                        help='Also list profiles that are configured but not referenced by '
+                             'any policy, in a "CONFIGURED BUT UNUSED PROFILES" section at the '
+                             'end of each report (default: only used profiles are shown)')
     parser.add_argument('--list-app-categories', action='store_true',
                         help='List application category IDs with example app names and exit '
                              '(helps map/verify the APP_CATEGORIES table) ')
@@ -629,17 +687,19 @@ def main():
 
     if do_web:
         web_pol = get_profile_policy_mapping(policies, 'webfilter-profile')
-        print(generate_report(web_profiles, categories, web_pol))
+        print(generate_report(web_profiles, categories, web_pol, args.include_unused))
         print()
 
     if do_dns:
         dns_pol = get_profile_policy_mapping(policies, 'dnsfilter-profile')
-        print(generate_dns_report(dns_profiles, categories, dns_pol, domain_filter_names))
+        print(generate_dns_report(dns_profiles, categories, dns_pol, domain_filter_names,
+                                  args.include_unused))
         print()
 
     if do_app:
         app_pol = get_profile_policy_mapping(policies, 'application-list')
-        print(generate_app_report(app_lists, app_pol, app_names, app_category_names))
+        print(generate_app_report(app_lists, app_pol, app_names, app_category_names,
+                                  args.include_unused))
         print()
 
     if do_clash:

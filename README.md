@@ -1,7 +1,7 @@
 # fgt-webfilter-parser
-Generates a VDOM-specific report of **WebFilter**, **DNS Filter** and **Application Control** profiles referenced in firewall policies (Name &amp; ID); unreferenced profiles are skipped. It can also flag FortiGuard categories where a policy's web filter and DNS filter profiles assign different actions (a "clash"). Requires a super-admin read-only API key. The script explicitly bypasses local proxies.
+Generates a VDOM-specific report of **WebFilter**, **DNS Filter** and **Application Control** profiles referenced in firewall policies (Name &amp; ID); unreferenced profiles are skipped by default (see `--include-unused`). Each profile's configured comment, if any, is shown. It can also flag FortiGuard categories where a policy's web filter and DNS filter profiles assign different actions (a "clash"). Requires a super-admin read-only API key. The script explicitly bypasses local proxies.
 
-By default (no section flag) all four reports are produced. Pass one or more of `--webfilter`, `--dnsfilter`, `--appcontrol`, `--check-clash` to limit output to those sections. `--check-clash` always fetches both web and DNS filter data regardless of the other flags.
+By default (no section flag) all four reports are produced. Pass one or more of `--webfilter`, `--dnsfilter`, `--appcontrol`, `--check-clash` to limit output to those sections. `--check-clash` always fetches both web and DNS filter data regardless of the other flags. Pass `--include-unused` to additionally list profiles that exist but aren't referenced by any policy; these appear in a `CONFIGURED BUT UNUSED PROFILES` section at the end of each report.
 
 The read-only API key must have read access to the `webfilter`, `dnsfilter`, `application` and `firewall/policy` endpoints.
 
@@ -10,7 +10,7 @@ The read-only API key must have read access to the `webfilter`, `dnsfilter`, `ap
 Usage:
 ```
 usage: generate-report.py [-h] [--webfilter] [--dnsfilter] [--appcontrol]
-                          [--check-clash]
+                          [--check-clash] [--include-unused]
                           fqdn vdom api_key
 
 Connect to FortiGate API
@@ -26,6 +26,10 @@ options:
   --dnsfilter    Include the DNS Filter profile report
   --appcontrol   Include the Application Control report
   --check-clash  Include the Web/DNS filter clash report
+  --include-unused
+                 Also list profiles that are configured but not referenced by
+                 any policy, in a "CONFIGURED BUT UNUSED PROFILES" section at
+                 the end of each report
   --list-app-categories
                  List application category IDs with example app names and exit
 
