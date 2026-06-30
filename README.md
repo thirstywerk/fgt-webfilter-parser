@@ -271,22 +271,37 @@ Profile: dnsflt_general
 ```
 
 Example Application Control Output:
+
+Categories are shown by their effective (GUI-style) action. Categories left at the sensor default appear under **Monitor** (FortiGate stores only categories that differ from the default as entries, so the report fills in the rest). `pass`+log maps to Monitor, `pass` without log to Allow, plus Block/Reset. Individual application overrides are listed under their action. Category IDs without a name in the built-in table are shown as `Category-<id>`.
 ```
 ================================================================================
 FORTIGATE APPLICATION CONTROL REPORT
 ================================================================================
 
-Profile: app_default
-  Used in Policies: "staff_internet" (id: 1)
+Profile: GLG-APPCTL-GENERAL
+  Used in Policies: "STAFF-TO-INET" (id: 1), "BREAKGLASS-TO-INET" (id: 3)
 --------------------------------------------------------------------------------
-  Pass - Categories:
+  Monitor - Categories:
+    - Business
+    - Cloud.IT
+    - Collaboration
+    - Email
+    - Game
+    - General.Interest
+    - Mobile
+    - Network.Service
+    - Proxy
+    - Remote.Access
     - Social.Media
+    - Storage.Backup
+    - Update
+    - Video/Audio
+    - VoIP
+    - Web.Client
   Block - Categories:
     - P2P
-    - Proxy
   Block - Applications:
     - BitTorrent
-    - Ultrasurf
 ================================================================================
 ```
 

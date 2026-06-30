@@ -24,8 +24,10 @@ SPECIAL_CATEGORIES = {
     141: "custom2",
 }
 
-# Application Control category IDs have no API source to resolve their names,
-# so they are hardcoded here. Verify/extend this map against your FortiOS version.
+# Application Control category IDs have no API source to resolve their names, so
+# they are hardcoded here. The full set of categories is discovered from the
+# signature database at runtime; IDs missing from this map fall back to
+# "Category-<id>". Extend this map as FortiGuard adds categories (e.g. GenAI).
 APP_CATEGORIES = {
     2:  "P2P",
     3:  "VoIP",
@@ -150,12 +152,10 @@ class FortiGateAPI:
         """Retrieve all application control lists"""
         return self._get("cmdb/application/list").get('results', [])
 
-    def get_application_names(self) -> Dict[int, str]:
-        """Retrieve application signature mapping (ID -> Name)"""
-        data = self._get("cmdb/application/name")
-        return {item['id']: item['name']
-                for item in data.get('results', [])
-                if 'id' in item and 'name' in item}
+    def get_applications(self) -> List[Dict]:
+        """Retrieve the full application signature database (each entry has at
+        least 'id', 'name' and 'category')."""
+        return self._get("cmdb/application/name").get('results', [])
 
 
 def get_profile_policy_mapping(policies: List[Dict], field_name: str) -> Dict[str, List[Dict[str, any]]]:
@@ -257,29 +257,47 @@ def categorise_dns_profile(profile: Dict, categories: Dict[int, str],
     return result, settings
 
 
-def categorise_app_list(app_list: Dict, app_names: Dict[int, str]) -> Dict[str, Dict[str, List[str]]]:
-    """Parse an application control list: per entry action (pass/block/reset),
-    collect the targeted category names and resolved application names."""
-    result = {
-        'pass':  {'categories': [], 'applications': []},
-        'block': {'categories': [], 'applications': []},
-        'reset': {'categories': [], 'applications': []},
-    }
+def _effective_action(action: str, log: str) -> str:
+    """Map an entry's CLI action+log to the GUI-style effective action.
+    pass+log -> monitor, pass+no-log -> allow, otherwise block/reset/etc."""
+    action = (action or 'pass').lower()
+    if action == 'pass':
+        return 'monitor' if str(log).lower() != 'disable' else 'allow'
+    return action
+
+
+def categorise_app_list(app_list: Dict, app_names: Dict[int, str],
+                        category_names: Dict[int, str]) -> Dict[str, Dict[str, List[str]]]:
+    """Parse an application control list into effective per-action groups.
+
+    Categories absent from any entry default to 'monitor' (the implicit GUI
+    default), so every known category is reported. Entries override that, and
+    individual application overrides are listed separately under their action.
+    """
+    # Every known category starts at the implicit default: monitor.
+    cat_action = {cat_id: 'monitor' for cat_id in category_names}
+    app_overrides: Dict[str, List[str]] = {}
 
     for entry in app_list.get('entries', []):
-        action = entry.get('action', 'block').lower()
-        if action not in result:
-            result[action] = {'categories': [], 'applications': []}
+        action = _effective_action(entry.get('action', 'pass'), entry.get('log', 'enable'))
 
         for cat in entry.get('category', []):
             cat_id = cat.get('id') if isinstance(cat, dict) else cat
-            result[action]['categories'].append(
-                APP_CATEGORIES.get(cat_id, f"Category-{cat_id}"))
+            cat_action[cat_id] = action
 
         for app in entry.get('application', []):
             app_id = app.get('id') if isinstance(app, dict) else app
-            result[action]['applications'].append(
+            app_overrides.setdefault(action, []).append(
                 app_names.get(app_id, f"App-{app_id}"))
+
+    result: Dict[str, Dict[str, List[str]]] = {}
+    for cat_id, action in cat_action.items():
+        result.setdefault(action, {'categories': [], 'applications': []})
+        result[action]['categories'].append(
+            category_names.get(cat_id, f"Category-{cat_id}"))
+    for action, apps in app_overrides.items():
+        result.setdefault(action, {'categories': [], 'applications': []})
+        result[action]['applications'].extend(apps)
 
     return result
 
@@ -429,7 +447,8 @@ def generate_dns_report(profiles: List[Dict], categories: Dict[int, str],
 
 def generate_app_report(app_lists: List[Dict],
                         profile_policies: Dict[str, List[Dict[str, any]]],
-                        app_names: Dict[int, str]) -> str:
+                        app_names: Dict[int, str],
+                        category_names: Dict[int, str]) -> str:
     """Generate formatted application control text report"""
     lines = _section_header("FORTIGATE APPLICATION CONTROL REPORT")
 
@@ -439,7 +458,7 @@ def generate_app_report(app_lists: List[Dict],
         lines.append("No application control profiles are currently used in firewall policies.")
         return "\n".join(lines)
 
-    action_order = ['pass', 'block', 'reset']
+    action_order = ['monitor', 'allow', 'block', 'reset']
 
     for app_list in used_lists:
         list_name = app_list.get('name', 'Unnamed Profile')
@@ -448,12 +467,12 @@ def generate_app_report(app_lists: List[Dict],
         lines.append(f"  Used in Policies: {_policy_refs_line(profile_policies.get(list_name, []))}")
         lines.append("-" * 80)
 
-        categorised = categorise_app_list(app_list, app_names)
+        categorised = categorise_app_list(app_list, app_names, category_names)
         keys = action_order + [k for k in categorised if k not in action_order]
 
         for key in keys:
-            data = categorised[key]
-            if not data['categories'] and not data['applications']:
+            data = categorised.get(key)
+            if not data or (not data['categories'] and not data['applications']):
                 continue
             label = key.capitalize()
             _category_block(lines, f"{label} - Categories", data['categories'], show_none=False)
@@ -554,13 +573,23 @@ def main():
 
     app_lists = []
     app_names = {}
+    app_category_names = dict(APP_CATEGORIES)
     if do_app:
         print("Fetching application control lists...")
         app_lists = fg.get_application_lists()
         print(f"Retrieved {len(app_lists)} application control lists.")
         print("Fetching application signatures...")
-        app_names = fg.get_application_names()
-        print(f"Retrieved {len(app_names)} application signatures.")
+        applications = fg.get_applications()
+        print(f"Retrieved {len(applications)} application signatures.")
+        # Build signature id -> name, and discover the full set of categories
+        # present on this box so unconfigured (implicitly monitored) categories
+        # still appear in the report.
+        for sig in applications:
+            if 'id' in sig and 'name' in sig:
+                app_names[sig['id']] = sig['name']
+            cat_id = sig.get('category')
+            if isinstance(cat_id, int):
+                app_category_names.setdefault(cat_id, APP_CATEGORIES.get(cat_id, f"Category-{cat_id}"))
 
     print("\nGenerating report...\n")
 
@@ -576,7 +605,7 @@ def main():
 
     if do_app:
         app_pol = get_profile_policy_mapping(policies, 'application-list')
-        print(generate_app_report(app_lists, app_pol, app_names))
+        print(generate_app_report(app_lists, app_pol, app_names, app_category_names))
         print()
 
     if do_clash:
