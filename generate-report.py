@@ -28,6 +28,9 @@ SPECIAL_CATEGORIES = {
 # they are hardcoded here. The full set of categories is discovered from the
 # signature database at runtime; IDs missing from this map fall back to
 # "Category-<id>". Extend this map as FortiGuard adds categories (e.g. GenAI).
+# These names are taken verbatim from a FortiOS 7.4 box's "set category" CLI
+# completion list, so they match the device. Re-check that list on a major
+# FortiOS upgrade in case IDs/names change.
 APP_CATEGORIES = {
     2:  "P2P",
     3:  "VoIP",
@@ -42,12 +45,12 @@ APP_CATEGORIES = {
     22: "Storage.Backup",
     23: "Social.Media",
     25: "Web.Client",
-    26: "Collaboration",
-    28: "Business",
+    26: "Operational.Technology",
+    28: "Collaboration",
+    29: "Business",
     30: "Cloud.IT",
     31: "Mobile",
-    32: "Industrial",
-    33: "Unknown.Applications",
+    32: "Unknown Applications",
     36: "GenAI",
 }
 
