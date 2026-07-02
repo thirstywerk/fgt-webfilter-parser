@@ -1,42 +1,76 @@
 # fgt-webfilter-parser
 Generates a VDOM-specific report of **WebFilter**, **DNS Filter** and **Application Control** profiles referenced in firewall policies (Name &amp; ID); unreferenced profiles are skipped by default (see `--include-unused`). Each profile's configured comment, if any, is shown. It can also flag FortiGuard categories where a policy's web filter and DNS filter profiles assign different actions (a "clash"). Requires a super-admin read-only API key. The script explicitly bypasses local proxies.
 
+Every flag has a short and long form (e.g. `-f`/`--fqdn`, `-o`/`--output-file`) — see the usage block below for the full list.
+
+By default TLS certificate verification is skipped, since FortiGate appliances typically ship with a self-signed certificate. If your device's cert is signed by a CA you trust (e.g. an internal CA), pass `--ca-bundle <path>` to verify against it instead.
+
 By default (no section flag) all four reports are produced. Pass one or more of `--webfilter`, `--dnsfilter`, `--appcontrol`, `--check-clash` to limit output to those sections. `--check-clash` always fetches both web and DNS filter data regardless of the other flags. Pass `--include-unused` to additionally list profiles that exist but aren't referenced by any policy; these appear in a `CONFIGURED BUT UNUSED PROFILES` section at the end of each report.
 
-The read-only API key must have read access to the `webfilter`, `dnsfilter`, `application` and `firewall/policy` endpoints.
+The read-only API key must have read access to the `webfilter`, `dnsfilter`, `application` and `firewall/policy` endpoints. Prefer setting it via the `FGT_API_KEY` environment variable rather than passing `--api-key` directly — passing the key on the command line always leaves it visible to other local users via the process list (`ps`/`/proc/<pid>/cmdline`) while the script runs.
+
+Note that setting `FGT_API_KEY` inline on the same line as the command (`FGT_API_KEY=... python generate-report.py ...`) does **not** keep it out of shell history — bash records the whole line you type regardless of the `VAR=value` prefix. To actually avoid history, prompt for it separately and export it:
+```
+read -rs FGT_API_KEY && export FGT_API_KEY
+```
+This never puts the key on a command line, so it can't leak via history or `ps`. (If your shell has `HISTCONTROL` set to `ignorespace`/`ignoreboth` — check with `echo $HISTCONTROL` — a leading space before a command also keeps that one line out of history, e.g. ` export FGT_API_KEY=...`.)
+
+`--vdom` is optional and defaults to `root` (FortiGate's default VDOM on non-VDOM-enabled firewalls). Any omitted argument that has a default is listed in a `Defaults used:` summary printed at the start of a run; pass `--quiet` to suppress it.
+
+Pass `--output-file`/`-o <path>` to also write the report text to a file — only the report sections go there, never the progress/status messages, which always go to stdout only. Combine with `--very-quiet` to suppress all stdout output too (requires `-o`, since otherwise there'd be no output at all).
 
 > Note: Application Control *category* IDs cannot be resolved to names via the API, so they are mapped from the hardcoded `APP_CATEGORIES` table in `generate-report.py`. Any unmapped ID is shown as `Category-<id>`. Run with `--list-app-categories` to print every category ID present on the device alongside example application names — use this to identify and add missing names to `APP_CATEGORIES` for your FortiOS version.
 
 Usage:
 ```
-usage: generate-report.py [-h] [--webfilter] [--dnsfilter] [--appcontrol]
-                          [--check-clash] [--include-unused]
-                          fqdn vdom api_key
+usage: generate-report.py [-h] -f FQDN [-v VDOM] [-k API_KEY] [-w] [-d] [-a]
+                          [-c] [-u] [-l] [-b PATH] [-o PATH] [-q] [-Q]
 
 Connect to FortiGate API
 
-positional arguments:
-  fqdn           Fully Qualified Domain Name with optional port (FQDN[:PORT])
-  vdom           Virtual Domain name
-  api_key        API key for authentication
-
 options:
-  -h, --help     show this help message and exit
-  --webfilter    Include the WebFilter profile report
-  --dnsfilter    Include the DNS Filter profile report
-  --appcontrol   Include the Application Control report
-  --check-clash  Include the Web/DNS filter clash report
-  --include-unused
-                 Also list profiles that are configured but not referenced by
-                 any policy, in a "CONFIGURED BUT UNUSED PROFILES" section at
-                 the end of each report
-  --list-app-categories
-                 List application category IDs with example app names and exit
+  -h, --help            show this help message and exit
+  -f, --fqdn FQDN       Fully Qualified Domain Name with optional port
+                        (FQDN[:PORT])
+  -v, --vdom VDOM       Virtual Domain name (default: 'root', FortiGate's
+                        default VDOM)
+  -k, --api-key API_KEY
+                        API key for authentication. Passing this leaves it
+                        visible in shell history and process listings; prefer
+                        setting the FGT_API_KEY environment variable instead
+                        (see examples below).
+  -w, --webfilter       Include the WebFilter profile report
+  -d, --dnsfilter       Include the DNS Filter profile report
+  -a, --appcontrol      Include the Application Control report
+  -c, --check-clash     Include the Web/DNS filter clash report
+  -u, --include-unused  Also list profiles that are configured but not
+                        referenced by any policy, in a "CONFIGURED BUT UNUSED
+                        PROFILES" section at the end of each report (default:
+                        only used profiles are shown)
+  -l, --list-app-categories
+                        List application category IDs with example app names
+                        and exit (helps map/verify the APP_CATEGORIES table)
+  -b, --ca-bundle PATH  Verify the FortiGate's TLS certificate against this CA
+                        bundle (e.g. the internal CA that issued it). By
+                        default TLS verification is skipped, since FortiGate
+                        appliances typically ship with a self-signed
+                        certificate.
+  -o, --output-file PATH
+                        Also write report text to this file (progress/status
+                        messages are never written to it, only stdout).
+  -q, --quiet           Suppress the "Defaults used:" summary printed for any
+                        omitted argument.
+  -Q, --very-quiet      Suppress all stdout output (progress messages, the
+                        "Defaults used:" summary, and report text). Requires
+                        --output-file/-o, since otherwise there would be no
+                        output at all.
 
 Examples:
-  python generate-report.py dc-abc-fw01.xy.com:8443 FG-traffic YOUR_API_KEY
-  python generate-report.py dc-abc-fw02.xy.com FG-traffic YOUR_API_KEY
-  python generate-report.py dc-abc-fw02.xy.com FG-traffic YOUR_API_KEY --dnsfilter --check-clash
+  read -rs FGT_API_KEY && export FGT_API_KEY   # prompts silently, never touches
+                                                # the command line or shell history
+  python generate-report.py --fqdn dc-abc-fw01.xy.com:8443 --vdom FG-traffic
+  python generate-report.py --fqdn dc-abc-fw01.xy.com:8443 --vdom FG-traffic --api-key YOUR_API_KEY
+  python generate-report.py --fqdn dc-abc-fw01.xy.com:8443 -o report.txt --very-quiet
 ```
 
 Example Output:

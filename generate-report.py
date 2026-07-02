@@ -11,6 +11,7 @@ Tested on FortiGate running 7.4.9
 import requests
 import urllib3
 import json
+import os
 import sys
 import argparse
 from typing import Dict, List, Optional, Tuple
@@ -55,7 +56,7 @@ APP_CATEGORIES = {
 }
 
 class FortiGateAPI:
-    def __init__(self, fqdn: str, api_key: str, vdom: str):
+    def __init__(self, fqdn: str, api_key: str, vdom: str, ca_bundle: Optional[str] = None):
         # Parse FQDN and port
         if ':' in fqdn:
             self.host, port = fqdn.rsplit(':', 1)
@@ -66,6 +67,10 @@ class FortiGateAPI:
 
         self.api_key = api_key
         self.vdom = vdom
+        # TLS verification is off by default because FortiGate appliances
+        # typically ship with a self-signed cert. Pass --ca-bundle to verify
+        # against a CA (e.g. an internal CA that issued the device's cert).
+        self.verify = ca_bundle if ca_bundle else False
         self.base_url = f"https://{self.host}:{self.port}/api/v2"
         self.headers = {
             'Authorization': f'Bearer {self.api_key}',
@@ -81,7 +86,7 @@ class FortiGateAPI:
 
         try:
             response = requests.get(url, headers=self.headers, params=params,
-                                  verify=False, timeout=30, proxies=self.proxies)
+                                  verify=self.verify, timeout=30, proxies=self.proxies)
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -90,56 +95,16 @@ class FortiGateAPI:
 
     def get_webfilter_categories(self) -> Dict[int, str]:
         """Retrieve webfilter categories mapping (ID -> Name)"""
-        url = f"{self.base_url}/monitor/webfilter/fortiguard-categories"
-        params = {'vdom': self.vdom}
-
-        try:
-            response = requests.get(url, headers=self.headers, params=params,
-                                  verify=False, timeout=30, proxies=self.proxies)
-            response.raise_for_status()
-            data = response.json()
-
-            categories = {}
-            if 'results' in data:
-                for cat in data['results']:
-                    categories[cat['id']] = cat['name']
-
-            return categories
-        except Exception as e:
-            print(f"Error fetching categories: {e}", file=sys.stderr)
-            return {}
+        data = self._get("monitor/webfilter/fortiguard-categories")
+        return {cat['id']: cat['name'] for cat in data.get('results', [])}
 
     def get_webfilter_profiles(self) -> List[Dict]:
         """Retrieve all webfilter profiles"""
-        url = f"{self.base_url}/cmdb/webfilter/profile"
-        params = {'vdom': self.vdom}
-
-        try:
-            response = requests.get(url, headers=self.headers, params=params,
-                                  verify=False, timeout=30, proxies=self.proxies)
-            response.raise_for_status()
-            data = response.json()
-
-            return data.get('results', [])
-        except Exception as e:
-            print(f"Error fetching profiles: {e}", file=sys.stderr)
-            return []
+        return self._get("cmdb/webfilter/profile").get('results', [])
 
     def get_firewall_policies(self) -> List[Dict]:
         """Retrieve all firewall policies"""
-        url = f"{self.base_url}/cmdb/firewall/policy"
-        params = {'vdom': self.vdom}
-
-        try:
-            response = requests.get(url, headers=self.headers, params=params,
-                                  verify=False, timeout=30, proxies=self.proxies)
-            response.raise_for_status()
-            data = response.json()
-
-            return data.get('results', [])
-        except Exception as e:
-            print(f"Error fetching firewall policies: {e}", file=sys.stderr)
-            return []
+        return self._get("cmdb/firewall/policy").get('results', [])
 
     def get_dnsfilter_profiles(self) -> List[Dict]:
         """Retrieve all DNS filter profiles"""
@@ -591,76 +556,157 @@ def list_app_categories(fg: 'FortiGateAPI', examples: int = 6):
     print("=" * 80)
 
 
+class ReportWriter:
+    """Routes progress/status messages to stdout only, and report text to
+    stdout (unless very_quiet) and to the output file, if one was given."""
+
+    def __init__(self, output_file: Optional[str] = None, very_quiet: bool = False):
+        self.very_quiet = very_quiet
+        self._fh = open(output_file, 'w') if output_file else None
+
+    def status(self, msg: str = "") -> None:
+        """Progress/info message: stdout only, never written to the output file."""
+        if not self.very_quiet:
+            print(msg)
+
+    def report(self, text: str) -> None:
+        """Report text: goes to stdout (unless very_quiet) and to the output file."""
+        if not self.very_quiet:
+            print(text)
+        if self._fh:
+            self._fh.write(text + "\n")
+
+    def close(self) -> None:
+        if self._fh:
+            self._fh.close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Connect to FortiGate API',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='Example: python generate-report.py dc-abc-fw01.xy.com:8443 FG-traffic YOUR_API_KEY'
+        epilog='Examples:\n'
+               '  read -rs FGT_API_KEY && export FGT_API_KEY   # prompts silently, never touches\n'
+               '                                                # the command line or shell history\n'
+               '  python generate-report.py --fqdn dc-abc-fw01.xy.com:8443 --vdom FG-traffic\n'
+               '  python generate-report.py --fqdn dc-abc-fw01.xy.com:8443 --vdom FG-traffic --api-key YOUR_API_KEY\n'
+               '  python generate-report.py --fqdn dc-abc-fw01.xy.com:8443 -o report.txt --very-quiet'
     )
 
-    parser.add_argument('fqdn', help='Fully Qualified Domain Name with optional port (FQDN[:PORT])')
-    parser.add_argument('vdom', help='Virtual Domain name')
-    parser.add_argument('api_key', help='API key for authentication')
-    parser.add_argument('--webfilter', action='store_true',
+    parser.add_argument('-f', '--fqdn', required=True,
+                        help='Fully Qualified Domain Name with optional port (FQDN[:PORT])')
+    parser.add_argument('-v', '--vdom', default=None,
+                        help="Virtual Domain name (default: 'root', FortiGate's default VDOM)")
+    parser.add_argument('-k', '--api-key', default=None,
+                        help='API key for authentication. Passing this leaves it visible in '
+                             'shell history and process listings; prefer setting the '
+                             'FGT_API_KEY environment variable instead (see examples below).')
+    parser.add_argument('-w', '--webfilter', action='store_true',
                         help='Include the WebFilter profile report')
-    parser.add_argument('--dnsfilter', action='store_true',
+    parser.add_argument('-d', '--dnsfilter', action='store_true',
                         help='Include the DNS Filter profile report')
-    parser.add_argument('--appcontrol', action='store_true',
+    parser.add_argument('-a', '--appcontrol', action='store_true',
                         help='Include the Application Control report')
-    parser.add_argument('--check-clash', action='store_true',
+    parser.add_argument('-c', '--check-clash', action='store_true',
                         help='Include the Web/DNS filter clash report')
-    parser.add_argument('--include-unused', action='store_true',
+    parser.add_argument('-u', '--include-unused', action='store_true',
                         help='Also list profiles that are configured but not referenced by '
                              'any policy, in a "CONFIGURED BUT UNUSED PROFILES" section at the '
                              'end of each report (default: only used profiles are shown)')
-    parser.add_argument('--list-app-categories', action='store_true',
+    parser.add_argument('-l', '--list-app-categories', action='store_true',
                         help='List application category IDs with example app names and exit '
                              '(helps map/verify the APP_CATEGORIES table) ')
+    parser.add_argument('-b', '--ca-bundle', metavar='PATH',
+                        help='Verify the FortiGate\'s TLS certificate against this CA bundle '
+                             '(e.g. the internal CA that issued it). By default TLS verification '
+                             'is skipped, since FortiGate appliances typically ship with a '
+                             'self-signed certificate.')
+    parser.add_argument('-o', '--output-file', metavar='PATH',
+                        help='Also write report text to this file (progress/status messages '
+                             'are never written to it, only stdout).')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                        help='Suppress the "Defaults used:" summary printed for any omitted '
+                             'argument.')
+    parser.add_argument('-Q', '--very-quiet', action='store_true',
+                        help='Suppress all stdout output (progress messages, the "Defaults '
+                             'used:" summary, and report text). Requires --output-file/-o, '
+                             'since otherwise there would be no output at all.')
 
     args = parser.parse_args()
+
+    if args.very_quiet and not args.output_file:
+        parser.error('--very-quiet requires --output-file/-o (otherwise there would be no '
+                     'output at all)')
 
     # Default: with no section flag, run everything.
     do_web = args.webfilter
     do_dns = args.dnsfilter
     do_app = args.appcontrol
     do_clash = args.check_clash
-    if not (do_web or do_dns or do_app or do_clash):
+    sections_defaulted = not (do_web or do_dns or do_app or do_clash)
+    if sections_defaulted:
         do_web = do_dns = do_app = do_clash = True
 
     fqdn = args.fqdn
-    vdom = args.vdom
-    api_key = args.api_key
+    vdom = args.vdom or 'root'
+    api_key = args.api_key or os.environ.get('FGT_API_KEY')
+    api_key_from_env = not args.api_key and api_key
+    if not api_key:
+        parser.error('an API key is required: pass --api-key or set FGT_API_KEY')
 
-    print(f"Connecting to {fqdn} (VDOM: {vdom})...")
-    fg = FortiGateAPI(fqdn, api_key, vdom)
+    defaults_used = []
+    if not args.vdom:
+        defaults_used.append("--vdom (defaulted to 'root')")
+    if sections_defaulted:
+        defaults_used.append('--webfilter/--dnsfilter/--appcontrol/--check-clash '
+                             '(none given, defaulting to all)')
+    if not args.ca_bundle:
+        defaults_used.append('--ca-bundle (not given, TLS certificate verification disabled)')
+    if api_key_from_env:
+        defaults_used.append('--api-key (not given, using FGT_API_KEY environment variable)')
+
+    if defaults_used and not args.quiet and not args.very_quiet:
+        print('Defaults used:')
+        for line in defaults_used:
+            print(f'  - {line}')
+        print()
+
+    try:
+        writer = ReportWriter(args.output_file, very_quiet=args.very_quiet)
+    except OSError as e:
+        parser.error(f'cannot open --output-file {args.output_file!r}: {e}')
+
+    writer.status(f"Connecting to {fqdn} (VDOM: {vdom})...")
+    fg = FortiGateAPI(fqdn, api_key, vdom, ca_bundle=args.ca_bundle)
 
     if args.list_app_categories:
         list_app_categories(fg)
+        writer.close()
         return
 
-    print("Fetching firewall policies...")
+    writer.status("Fetching firewall policies...")
     policies = fg.get_firewall_policies()
-    print(f"Retrieved {len(policies)} policies.")
+    writer.status(f"Retrieved {len(policies)} policies.")
 
     # FortiGuard categories are shared by webfilter, DNS filter and the clash check.
     categories = {}
     if do_web or do_dns or do_clash:
-        print("Fetching FortiGuard categories...")
+        writer.status("Fetching FortiGuard categories...")
         categories = fg.get_webfilter_categories()
-        print(f"Retrieved {len(categories)} categories.")
+        writer.status(f"Retrieved {len(categories)} categories.")
 
     # The clash check needs both web and DNS profile data regardless of section flags.
     web_profiles = []
     if do_web or do_clash:
-        print("Fetching webfilter profiles...")
+        writer.status("Fetching webfilter profiles...")
         web_profiles = fg.get_webfilter_profiles()
-        print(f"Retrieved {len(web_profiles)} webfilter profiles.")
+        writer.status(f"Retrieved {len(web_profiles)} webfilter profiles.")
 
     dns_profiles = []
     if do_dns or do_clash:
-        print("Fetching DNS filter profiles...")
+        writer.status("Fetching DNS filter profiles...")
         dns_profiles = fg.get_dnsfilter_profiles()
-        print(f"Retrieved {len(dns_profiles)} DNS filter profiles.")
+        writer.status(f"Retrieved {len(dns_profiles)} DNS filter profiles.")
 
     domain_filter_names = {}
     if do_dns:
@@ -670,12 +716,12 @@ def main():
     app_names = {}
     app_category_names = dict(APP_CATEGORIES)
     if do_app:
-        print("Fetching application control lists...")
+        writer.status("Fetching application control lists...")
         app_lists = fg.get_application_lists()
-        print(f"Retrieved {len(app_lists)} application control lists.")
-        print("Fetching application signatures...")
+        writer.status(f"Retrieved {len(app_lists)} application control lists.")
+        writer.status("Fetching application signatures...")
         applications = fg.get_applications()
-        print(f"Retrieved {len(applications)} application signatures.")
+        writer.status(f"Retrieved {len(applications)} application signatures.")
         # Build signature id -> name, and discover the full set of categories
         # present on this box so unconfigured (implicitly monitored) categories
         # still appear in the report.
@@ -686,30 +732,32 @@ def main():
             if isinstance(cat_id, int):
                 app_category_names.setdefault(cat_id, APP_CATEGORIES.get(cat_id, f"Category-{cat_id}"))
 
-    print("\nGenerating report...\n")
+    writer.status("\nGenerating report...\n")
 
     if do_web:
         web_pol = get_profile_policy_mapping(policies, 'webfilter-profile')
-        print(generate_report(web_profiles, categories, web_pol, args.include_unused))
-        print()
+        writer.report(generate_report(web_profiles, categories, web_pol, args.include_unused))
+        writer.report("")
 
     if do_dns:
         dns_pol = get_profile_policy_mapping(policies, 'dnsfilter-profile')
-        print(generate_dns_report(dns_profiles, categories, dns_pol, domain_filter_names,
-                                  args.include_unused))
-        print()
+        writer.report(generate_dns_report(dns_profiles, categories, dns_pol, domain_filter_names,
+                                          args.include_unused))
+        writer.report("")
 
     if do_app:
         app_pol = get_profile_policy_mapping(policies, 'application-list')
-        print(generate_app_report(app_lists, app_pol, app_names, app_category_names,
-                                  args.include_unused))
-        print()
+        writer.report(generate_app_report(app_lists, app_pol, app_names, app_category_names,
+                                          args.include_unused))
+        writer.report("")
 
     if do_clash:
         web_by_name = {p['name']: p for p in web_profiles if 'name' in p}
         dns_by_name = {p['name']: p for p in dns_profiles if 'name' in p}
         clashes = find_webdns_clashes(policies, web_by_name, dns_by_name, categories)
-        print(generate_clash_report(clashes))
+        writer.report(generate_clash_report(clashes))
+
+    writer.close()
 
 
 if __name__ == "__main__":
